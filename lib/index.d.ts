@@ -1,17 +1,16 @@
 /**
- * dsh-article-publish — publish articles to CSDN / Juejin / CNBlog from inside
- * a DeepSeek Harness session, backed by the `mcp-server-article` binary
- * (https://gitcode.com/qq8864/article-publish-mcp).
+ * dsh-article-publish — publish articles from a DeepSeek Harness session
+ * directly to CSDN / Juejin / CNBlog (no external MCP server required).
  *
- * Registers three model-visible tools:
- *   - publish_article   : publish or update on one platform
- *   - fetch_news        : latest tech news (CNBlog RSS)
- *   - fetch_experience  : random interview experience (Nowcoder)
+ * Registers two model-visible tools:
+ *   - publish_article : publish or update on one platform, returns the URL
+ *   - fetch_news      : one random tech-news item as article material
  *
- * Each call spawns a fresh stdio MCP process, runs the initialize handshake,
- * invokes one tool and returns the text result. Platform cookies resolve
- * inside the MCP binary: explicit param → plugin config → env vars → Chrome
- * CDP capture.
+ * Credentials resolve per platform as: plugin config → environment variable
+ * (CSDN_COOKIE / JUEJIN_COOKIE / CNBLOG_COOKIE / CNBLOG_TOKEN /
+ * CNBLOG_USERNAME) → friendly error. Get cookies from your browser after
+ * logging in (DevTools → Application → Cookies), or run
+ * `mcp-server-article get-cookies` to export them.
  *
  * @module dsh-article-publish
  */
@@ -21,39 +20,46 @@ import type { Context } from '@deepseek-ai/cordis';
 declare const name = "article-publish";
 /** Core services required before the tools can be registered. */
 declare const inject: string[];
+/** Resolved platform credentials after config→env fallback. */
+export interface PlatformCredentials {
+    csdnCookie: string;
+    juejinCookie: string;
+    cnblogCookie: string;
+    cnblogToken: string;
+    cnblogUsername: string;
+}
 /** Plugin configuration after schema validation. */
 export interface ArticlePublishConfig {
     enabled: boolean;
-    /** Path to the mcp-server-article executable. */
-    mcpServerPath: string;
-    /** Extra argv for the server (e.g. `node script.mjs`). */
-    mcpServerArgs: string[];
-    /** Optional platform cookies; empty values fall back to env / Chrome CDP inside the MCP server. */
     csdnCookie?: string;
     juejinCookie?: string;
     cnblogCookie?: string;
     cnblogToken?: string;
+    cnblogUsername?: string;
 }
 declare const Config: z<Schemastery.ObjectS<{
     enabled: z<boolean, boolean>;
-    mcpServerPath: z<string, string>;
-    mcpServerArgs: z<string[], string[]>;
     csdnCookie: z<string, string>;
     juejinCookie: z<string, string>;
     cnblogCookie: z<string, string>;
     cnblogToken: z<string, string>;
+    cnblogUsername: z<string, string>;
 }>, Schemastery.ObjectT<{
     enabled: z<boolean, boolean>;
-    mcpServerPath: z<string, string>;
-    mcpServerArgs: z<string[], string[]>;
     csdnCookie: z<string, string>;
     juejinCookie: z<string, string>;
     cnblogCookie: z<string, string>;
     cnblogToken: z<string, string>;
+    cnblogUsername: z<string, string>;
 }>>;
+/** Config wins over environment variables; missing values stay empty. */
+export declare function resolveCredentials(config: ArticlePublishConfig): PlatformCredentials;
 /**
- * Mount the plugin: register the three article tools.
+ * Mount the plugin: register the publish and news tools.
  */
 declare function apply(ctx: Context, config: ArticlePublishConfig): void;
 export { Config, apply, inject, name };
-export { callMcpTool, resultText } from './mcp.js';
+export { publishToCsdn } from './csdn.js';
+export { publishToJuejin } from './juejin.js';
+export { publishToCnblog } from './cnblog.js';
+export { fetchRandomNews } from './news.js';
