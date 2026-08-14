@@ -1,20 +1,18 @@
 # dsh-article-publish bundle patch: publish articles to CSDN / Juejin / CNBlog.
 #
-# Registers model-visible tools backed by the mcp-server-article binary
-# (https://gitcode.com/qq8864/article-publish-mcp):
-#   - publish_article  : publish/update on one platform
-#   - fetch_news       : latest tech news (CNBlog RSS)
-#   - fetch_experience : random interview experience (Nowcoder)
+# Registers model-visible tools (no external MCP server required):
+#   - publish_article  : publish/update on one platform, returns the URL
+#   - fetch_news       : one random tech-news item as material
 #
 # Configuration (via the profile's cordis.patch.yml or --patch overlays):
 #   - id: article-publish
 #     config:
 #       enabled: true
-#       mcpServerPath: /path/to/mcp-server-article   # required
-#       csdnCookie: ''       # optional; empty falls back to env / Chrome CDP
-#       juejinCookie: ''
-#       cnblogCookie: ''
-#       cnblogToken: ''
+#       csdnCookie: ''        # optional; falls back to CSDN_COOKIE env
+#       juejinCookie: ''      # optional; falls back to JUEJIN_COOKIE env
+#       cnblogCookie: ''      # optional; falls back to CNBLOG_COOKIE env
+#       cnblogToken: ''       # optional; falls back to CNBLOG_TOKEN env
+#       cnblogUsername: ''    # optional; falls back to CNBLOG_USERNAME env
 
 - insert:
     - id: article-publish
