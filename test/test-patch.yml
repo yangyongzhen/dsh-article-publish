@@ -1,6 +1,3 @@
 - id: article-publish
   config:
     enabled: true
-    mcpServerPath: D:/Program Files/nodejs/node.exe
-    mcpServerArgs:
-      - C:/Users/GL2682/dsh-article-publish/test/mock-mcp-server.mjs
