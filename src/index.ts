@@ -1,53 +1,70 @@
 /**
- * dsh-article-publish — publish articles to CSDN / Juejin / CNBlog from inside
- * a DeepSeek Harness session, backed by the `mcp-server-article` binary
- * (https://gitcode.com/qq8864/article-publish-mcp).
+ * dsh-article-publish — publish articles from a DeepSeek Harness session
+ * directly to CSDN / Juejin / CNBlog (no external MCP server required).
  *
- * Registers three model-visible tools:
- *   - publish_article   : publish or update on one platform
- *   - fetch_news        : latest tech news (CNBlog RSS)
- *   - fetch_experience  : random interview experience (Nowcoder)
+ * Registers two model-visible tools:
+ *   - publish_article : publish or update on one platform, returns the URL
+ *   - fetch_news      : one random tech-news item as article material
  *
- * Each call spawns a fresh stdio MCP process, runs the initialize handshake,
- * invokes one tool and returns the text result. Platform cookies resolve
- * inside the MCP binary: explicit param → plugin config → env vars → Chrome
- * CDP capture.
+ * Credentials resolve per platform as: plugin config → environment variable
+ * (CSDN_COOKIE / JUEJIN_COOKIE / CNBLOG_COOKIE / CNBLOG_TOKEN /
+ * CNBLOG_USERNAME) → friendly error. Get cookies from your browser after
+ * logging in (DevTools → Application → Cookies), or run
+ * `mcp-server-article get-cookies` to export them.
  *
  * @module dsh-article-publish
  */
 import z from '@deepseek-ai/schemastery';
 import type { Context } from '@deepseek-ai/cordis';
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools';
-import { callMcpTool } from './mcp.js';
+import { publishToCsdn } from './csdn.js';
+import { publishToJuejin } from './juejin.js';
+import { publishToCnblog } from './cnblog.js';
+import { fetchRandomNews } from './news.js';
 
 /** Stable Cordis plugin name. */
 const name = 'article-publish';
 /** Core services required before the tools can be registered. */
 const inject = ['tools'];
 
+/** Resolved platform credentials after config→env fallback. */
+export interface PlatformCredentials {
+	csdnCookie: string;
+	juejinCookie: string;
+	cnblogCookie: string;
+	cnblogToken: string;
+	cnblogUsername: string;
+}
+
 /** Plugin configuration after schema validation. */
 export interface ArticlePublishConfig {
 	enabled: boolean;
-	/** Path to the mcp-server-article executable. */
-	mcpServerPath: string;
-	/** Extra argv for the server (e.g. `node script.mjs`). */
-	mcpServerArgs: string[];
-	/** Optional platform cookies; empty values fall back to env / Chrome CDP inside the MCP server. */
 	csdnCookie?: string;
 	juejinCookie?: string;
 	cnblogCookie?: string;
 	cnblogToken?: string;
+	cnblogUsername?: string;
 }
 
 const Config = z.object({
 	enabled: z.boolean().default(true),
-	mcpServerPath: z.string().required(),
-	mcpServerArgs: z.array(z.string()).default([]),
 	csdnCookie: z.string(),
 	juejinCookie: z.string(),
 	cnblogCookie: z.string(),
-	cnblogToken: z.string()
+	cnblogToken: z.string(),
+	cnblogUsername: z.string()
 });
+
+/** Config wins over environment variables; missing values stay empty. */
+export function resolveCredentials(config: ArticlePublishConfig): PlatformCredentials {
+	return {
+		csdnCookie: config.csdnCookie ?? process.env.CSDN_COOKIE ?? '',
+		juejinCookie: config.juejinCookie ?? process.env.JUEJIN_COOKIE ?? '',
+		cnblogCookie: config.cnblogCookie ?? process.env.CNBLOG_COOKIE ?? '',
+		cnblogToken: config.cnblogToken ?? process.env.CNBLOG_TOKEN ?? '',
+		cnblogUsername: config.cnblogUsername ?? process.env.CNBLOG_USERNAME ?? ''
+	};
+}
 
 interface PublishArgs {
 	platform: 'csdn' | 'juejin' | 'cnblog';
@@ -57,42 +74,31 @@ interface PublishArgs {
 	articleId?: number;
 }
 
-const PLATFORM_TOOL: Record<PublishArgs['platform'], string> = {
-	csdn: 'publish_article_2_csdn',
-	juejin: 'publish_article_2_juejin',
-	cnblog: 'publish_article_2_cnblog'
-};
-
-/** Build the arguments forwarded to the matching MCP publish tool. */
-function publishArgsFor(config: ArticlePublishConfig, args: PublishArgs): Record<string, unknown> {
-	const common: Record<string, unknown> = { title: args.title, content: args.content };
+async function dispatchPublish(credentials: PlatformCredentials, args: PublishArgs): Promise<string> {
 	switch (args.platform) {
-		case 'csdn': {
-			if (args.description !== undefined) common.description = args.description;
-			if (args.articleId !== undefined) common.article_id = args.articleId;
-			if (config.csdnCookie !== undefined) common.cookie = config.csdnCookie;
-			return common;
-		}
-		case 'juejin': {
-			if (args.description !== undefined) common.description = args.description;
-			if (config.juejinCookie !== undefined) common.cookie = config.juejinCookie;
-			return common;
-		}
-		case 'cnblog': {
-			if (config.cnblogCookie !== undefined) common.cookie = config.cnblogCookie;
-			if (config.cnblogToken !== undefined) common.token = config.cnblogToken;
-			return common;
-		}
+		case 'csdn':
+			return publishToCsdn(credentials.csdnCookie, args.title, args.content, args.description, args.articleId);
+		case 'juejin':
+			return publishToJuejin(credentials.juejinCookie, args.title, args.content, args.description);
+		case 'cnblog':
+			return publishToCnblog(
+				credentials.cnblogCookie,
+				credentials.cnblogToken,
+				credentials.cnblogUsername,
+				args.title,
+				args.content
+			);
 	}
 }
 
 function publishTool(config: ArticlePublishConfig): ToolDefinition {
+	const credentials = resolveCredentials(config);
 	return defineTool({
 		name: 'publish_article',
 		description:
-			'发布或更新文章到 CSDN / 掘金 / 博客园。platform 必填（csdn|juejin|cnblog），' +
-			'title 与 content（Markdown）必填；description 可选（为空自动截取前 100 字，仅 csdn/juejin）；' +
-			'articleId 可选（仅 csdn，传入则原地更新）。返回文章链接。',
+			'发布或更新文章到 CSDN / 掘金 / 博客园。platform 必填（csdn|juejin|cnblog），title 与 content（Markdown）必填；' +
+			'description 可选（为空自动截取前 100 字，仅 csdn/juejin）；articleId 可选（仅 csdn，传入则原地更新）。' +
+			'CSDN 发布会自动把外链图片转存到 CSDN 图床。返回文章链接。',
 		parameters: {
 			platform: { type: 'string', required: true, description: '目标平台：csdn | juejin | cnblog' },
 			title: { type: 'string', required: true, description: '文章标题' },
@@ -109,46 +115,46 @@ function publishTool(config: ArticlePublishConfig): ToolDefinition {
 			if (platform !== 'csdn' && platform !== 'juejin' && platform !== 'cnblog') {
 				return `未知平台：${args.platform}`;
 			}
-			return callMcpTool(config.mcpServerPath, config.mcpServerArgs, PLATFORM_TOOL[platform], publishArgsFor(config, { ...args, platform }));
+			try {
+				return await dispatchPublish(credentials, { ...args, platform });
+			} catch (error) {
+				return `发布失败：${error instanceof Error ? error.message : String(error)}`;
+			}
 		}
 	});
 }
 
-function newsTool(config: ArticlePublishConfig): ToolDefinition {
+function newsTool(): ToolDefinition {
 	return defineTool({
 		name: 'fetch_news',
-		description: '获取最新科技资讯（博客园 RSS），返回标题与正文摘要，作为文章素材。',
+		description: '获取一条最新科技资讯（博客园 RSS 随机一篇），返回标题与内容摘要，作为文章素材。',
 		parameters: {},
 		output: {
 			schema: { type: 'string' },
 			render: (_args, value) => [{ type: 'text', text: value }]
 		},
-		execute: () => callMcpTool(config.mcpServerPath, config.mcpServerArgs, 'query_news', {})
-	});
-}
-
-function experienceTool(config: ArticlePublishConfig): ToolDefinition {
-	return defineTool({
-		name: 'fetch_experience',
-		description: '从牛客随机获取一篇面试经验（Markdown），作为文章素材。',
-		parameters: {},
-		output: {
-			schema: { type: 'string' },
-			render: (_args, value) => [{ type: 'text', text: value }]
-		},
-		execute: () => callMcpTool(config.mcpServerPath, config.mcpServerArgs, 'search_experience_question', {})
+		execute: async () => {
+			try {
+				const news = await fetchRandomNews();
+				return `【科技资讯】${news.title}\n\n${news.content}`;
+			} catch (error) {
+				return `获取资讯失败：${error instanceof Error ? error.message : String(error)}`;
+			}
+		}
 	});
 }
 
 /**
- * Mount the plugin: register the three article tools.
+ * Mount the plugin: register the publish and news tools.
  */
 function apply(ctx: Context, config: ArticlePublishConfig) {
 	if (!config.enabled) return;
 	ctx.tools.register(publishTool(config));
-	ctx.tools.register(newsTool(config));
-	ctx.tools.register(experienceTool(config));
+	ctx.tools.register(newsTool());
 }
 
 export { Config, apply, inject, name };
-export { callMcpTool, resultText } from './mcp.js';
+export { publishToCsdn } from './csdn.js';
+export { publishToJuejin } from './juejin.js';
+export { publishToCnblog } from './cnblog.js';
+export { fetchRandomNews } from './news.js';
